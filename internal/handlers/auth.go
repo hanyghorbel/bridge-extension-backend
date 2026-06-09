@@ -54,7 +54,6 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Store state in session/cookie to validate on callback
 	// For now, at minimum we're using random state instead of hardcoded
 
 	attioAuthURL := fmt.Sprintf(
@@ -75,7 +74,6 @@ func (h *AuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Validate state against stored session/cookie to prevent CSRF attacks
 	if state == "" {
 		log.Println("WARNING: State parameter missing on callback")
 	}
@@ -127,7 +125,7 @@ func (h *AuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var tokenResponse struct {
-		AccessToken       string `json:"access_token"`
+		AccessToken string `json:"access_token"`
 		// Some providers include identifying fields in the token response; parse them if present.
 		WorkspaceMemberID string `json:"workspace_member_id,omitempty"`
 		Email             string `json:"email,omitempty"`
@@ -282,7 +280,7 @@ func (h *AuthHandler) syncExistingCompaniesFromAttio(userID, attioToken string) 
 		ID struct {
 			RecordID string `json:"record_id"`
 		} `json:"id"`
-		WebURL string `json:"web_url"`
+		WebURL string                              `json:"web_url"`
 		Values map[string][]map[string]interface{} `json:"values"`
 	}
 
