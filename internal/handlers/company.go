@@ -30,6 +30,22 @@ type SyncRequest struct {
 	Domain      string `json:"domain"` // e.g. "google.com" extracted from their contact info
 }
 
+type syncConflictResponse struct {
+	Status    string `json:"status"`
+	Message   string `json:"message"`
+	RecordURL string `json:"record_url"`
+}
+
+func writeSyncConflict(w http.ResponseWriter, message, recordURL string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	json.NewEncoder(w).Encode(syncConflictResponse{
+		Status:    "conflict",
+		Message:   message,
+		RecordURL: recordURL,
+	})
+}
+
 func (h *CompanyHandler) HandleSync(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -57,11 +73,15 @@ func (h *CompanyHandler) HandleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if strings.TrimSpace(reqBody.CompanyName) == "" || strings.TrimSpace(reqBody.LinkedinURL) == "" {
+		http.Error(w, "company_name and linkedin_url are required", http.StatusBadRequest)
+		return
+	}
+
 	// 3. Check if this company has already been synced by this user
 	existingSync, err := h.companyRepo.GetSyncedCompanyByDomain(userID, reqBody.LinkedinURL)
 	if err == nil && existingSync != nil {
-		// Company already synced
-		http.Error(w, "Company record already exists in Attio", http.StatusConflict)
+		writeSyncConflict(w, "Company record already exists in Attio", existingSync.AttioRecordURL)
 		return
 	}
 
@@ -138,9 +158,9 @@ func (h *CompanyHandler) HandleSync(w http.ResponseWriter, r *http.Request) {
 										RecordID string `json:"record_id"`
 									} `json:"id"`
 									Values struct {
-										Name []map[string]interface{} `json:"name"`
+										Name     []map[string]interface{} `json:"name"`
 										LinkedIn []map[string]interface{} `json:"linkedin"`
-										Domains []map[string]interface{} `json:"domains"`
+										Domains  []map[string]interface{} `json:"domains"`
 									} `json:"values"`
 									WebURL string `json:"web_url"`
 								} `json:"data"`
@@ -174,14 +194,7 @@ func (h *CompanyHandler) HandleSync(w http.ResponseWriter, r *http.Request) {
 								if err := h.companyRepo.SaveSyncedCompany(syncLog); err != nil {
 									log.Printf("WARNING: failed saving conflicting Attio record locally: %v", err)
 								}
-								// Return a conflict to the client with helpful information
-								w.Header().Set("Content-Type", "application/json")
-								w.WriteHeader(http.StatusConflict)
-								json.NewEncoder(w).Encode(map[string]string{
-									"status":     "conflict",
-									"message":    "Company record already exists in Attio",
-									"record_url": single.Data.WebURL,
-								})
+								writeSyncConflict(w, "Company record already exists in Attio", single.Data.WebURL)
 								return
 							}
 						}
