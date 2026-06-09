@@ -78,8 +78,20 @@ func (h *CompanyHandler) HandleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	normalizedURL, err := normalizeLinkedInCompanyURL(reqBody.LinkedinURL)
+	if err != nil {
+		http.Error(w, "Invalid linkedin_url", http.StatusBadRequest)
+		return
+	}
+	reqBody.LinkedinURL = normalizedURL
+
 	// 3. Check if this company has already been synced by this user
 	existingSync, err := h.companyRepo.GetSyncedCompanyByDomain(userID, reqBody.LinkedinURL)
+	if err != nil || existingSync == nil {
+		if slug, slugErr := extractLinkedInCompanySlug(reqBody.LinkedinURL); slugErr == nil {
+			existingSync, err = h.companyRepo.GetSyncedCompanyByLinkedInSlug(userID, slug)
+		}
+	}
 	if err == nil && existingSync != nil {
 		writeSyncConflict(w, "Company record already exists in Attio", existingSync.AttioRecordURL)
 		return
@@ -182,6 +194,8 @@ func (h *CompanyHandler) HandleSync(w http.ResponseWriter, r *http.Request) {
 
 								if linkedinURL == "" {
 									linkedinURL = "attio:record:" + single.Data.ID.RecordID
+								} else if normalizedConflictURL, normErr := normalizeLinkedInCompanyURL(linkedinURL); normErr == nil {
+									linkedinURL = normalizedConflictURL
 								}
 
 								syncLog := &models.SyncedCompany{
@@ -240,5 +254,68 @@ func (h *CompanyHandler) HandleSync(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"status":     "success",
 		"record_url": attioResp.Data.WebURL,
+	})
+}
+
+type companyLookupResponse struct {
+	Status      string    `json:"status"`
+	CompanyName string    `json:"company_name,omitempty"`
+	RecordURL   string    `json:"record_url,omitempty"`
+	SyncedAt    time.Time `json:"synced_at,omitempty"`
+}
+
+func (h *CompanyHandler) HandleLookup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	authHeader := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		http.Error(w, "Unauthorized payload signature", http.StatusUnauthorized)
+		return
+	}
+	tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+
+	userID, err := auth.ValidateJWT(tokenString)
+	if err != nil {
+		http.Error(w, "Invalid or expired session token", http.StatusUnauthorized)
+		return
+	}
+
+	linkedinURL := strings.TrimSpace(r.URL.Query().Get("linkedin_url"))
+	if linkedinURL == "" {
+		http.Error(w, "linkedin_url query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	normalizedURL, err := normalizeLinkedInCompanyURL(linkedinURL)
+	if err != nil {
+		http.Error(w, "Invalid LinkedIn company URL", http.StatusBadRequest)
+		return
+	}
+
+	existingSync, err := h.companyRepo.GetSyncedCompanyByDomain(userID, normalizedURL)
+	if err != nil || existingSync == nil {
+		rawURL := strings.Split(linkedinURL, "?")[0]
+		existingSync, err = h.companyRepo.GetSyncedCompanyByDomain(userID, rawURL)
+	}
+	if err != nil || existingSync == nil {
+		if slug, slugErr := extractLinkedInCompanySlug(normalizedURL); slugErr == nil {
+			existingSync, err = h.companyRepo.GetSyncedCompanyByLinkedInSlug(userID, slug)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil || existingSync == nil {
+		json.NewEncoder(w).Encode(companyLookupResponse{Status: "not_synced"})
+		return
+	}
+
+	json.NewEncoder(w).Encode(companyLookupResponse{
+		Status:      "synced",
+		CompanyName: existingSync.CompanyName,
+		RecordURL:   existingSync.AttioRecordURL,
+		SyncedAt:    existingSync.SyncedAt,
 	})
 }

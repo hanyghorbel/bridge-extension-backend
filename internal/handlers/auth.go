@@ -358,6 +358,12 @@ func (h *AuthHandler) syncExistingCompaniesFromAttio(userID, attioToken string) 
 				}
 			}
 
+			if linkedinURL != "" {
+				if normalizedURL, normErr := normalizeLinkedInCompanyURL(linkedinURL); normErr == nil {
+					linkedinURL = normalizedURL
+				}
+			}
+
 			// If no LinkedIn URL, create a fallback identifier using domain or record ID
 			if linkedinURL == "" {
 				// Try to use domain if available

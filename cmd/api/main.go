@@ -50,6 +50,7 @@ func main() {
 	http.HandleFunc("/auth/attio/callback", authHandler.HandleCallback)
 	// Attach API action endpoints
 	http.HandleFunc("/api/sync", companyHandler.HandleSync)
+	http.HandleFunc("/api/companies/lookup", companyHandler.HandleLookup)
 
 	// Health check endpoint
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
