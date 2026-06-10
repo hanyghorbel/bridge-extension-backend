@@ -308,7 +308,6 @@ func (h *AuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 // syncExistingCompaniesFromAttio fetches all existing company records from Attio and stores them locally
 // to prevent duplicate sync attempts. Uses POST query endpoint with pagination.
-// todo: verify if this is useful and if the pagination works as intended
 func (h *AuthHandler) syncExistingCompaniesFromAttio(userID, attioToken string) error {
 	client := &http.Client{Timeout: 10 * time.Second}
 

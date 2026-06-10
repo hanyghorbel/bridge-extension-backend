@@ -86,12 +86,7 @@ func (h *CompanyHandler) HandleSync(w http.ResponseWriter, r *http.Request) {
 	reqBody.LinkedinURL = normalizedURL
 
 	// Check if this company has already been synced by this user
-	existingSync, err := h.companyRepo.GetSyncedCompanyByDomain(userID, reqBody.LinkedinURL)
-	if err != nil || existingSync == nil {
-		if slug, slugErr := extractLinkedInCompanySlug(reqBody.LinkedinURL); slugErr == nil {
-			existingSync, err = h.companyRepo.GetSyncedCompanyByLinkedInSlug(userID, slug)
-		}
-	}
+	existingSync, err := h.companyRepo.GetSyncedCompanyByLinkedInURL(userID, reqBody.LinkedinURL)
 	if err == nil && existingSync != nil {
 		writeSyncConflict(w, "Company record already exists in Attio", existingSync.AttioRecordURL)
 		return
@@ -144,85 +139,9 @@ func (h *CompanyHandler) HandleSync(w http.ResponseWriter, r *http.Request) {
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		log.Printf("Attio API Error - Status: %d, Body: %s", resp.StatusCode, string(bodyBytes))
-
-		// Attempt to detect uniqueness conflict and handle gracefully by mapping the
-		// conflicting remote record into our local DB and returning a 409 to the client.
-		// todo: check if this is necessary
-		var errBody map[string]interface{}
-		if err := json.Unmarshal(bodyBytes, &errBody); err == nil {
-			if code, _ := errBody["code"].(string); code == "uniqueness_conflict" {
-				// Extract any UUIDs mentioned in the message text
-				msg, _ := errBody["message"].(string)
-				re := regexp.MustCompile(`[0-9a-fA-F-]{36}`)
-				ids := re.FindAllString(msg, -1)
-				if len(ids) > 0 {
-					// Try to fetch the first conflicting record from Attio and persist locally
-					conflictingID := ids[0]
-					recURL := "https://api.attio.com/v2/objects/companies/records/" + conflictingID
-					reqGet, _ := http.NewRequest("GET", recURL, nil)
-					reqGet.Header.Set("Authorization", "Bearer "+attioToken)
-					getResp, err := client.Do(reqGet)
-					if err == nil && getResp != nil {
-						defer getResp.Body.Close()
-						if getResp.StatusCode == http.StatusOK {
-							var single struct {
-								Data struct {
-									ID struct {
-										RecordID string `json:"record_id"`
-									} `json:"id"`
-									Values struct {
-										Name     []map[string]interface{} `json:"name"`
-										LinkedIn []map[string]interface{} `json:"linkedin"`
-										Domains  []map[string]interface{} `json:"domains"`
-									} `json:"values"`
-									WebURL string `json:"web_url"`
-								} `json:"data"`
-							}
-							if err := json.NewDecoder(getResp.Body).Decode(&single); err == nil {
-								companyName := ""
-								if len(single.Data.Values.Name) > 0 {
-									if val, ok := single.Data.Values.Name[0]["value"].(string); ok {
-										companyName = val
-									}
-								}
-
-								linkedinURL := ""
-								if len(single.Data.Values.LinkedIn) > 0 {
-									if val, ok := single.Data.Values.LinkedIn[0]["value"].(string); ok {
-										linkedinURL = val
-									}
-								}
-
-								if linkedinURL == "" {
-									linkedinURL = "attio:record:" + single.Data.ID.RecordID
-								} else if normalizedConflictURL, normErr := normalizeLinkedInCompanyURL(linkedinURL); normErr == nil {
-									linkedinURL = normalizedConflictURL
-								}
-
-								syncLog := &models.SyncedCompany{
-									UserID:         userID,
-									LinkedinURL:    linkedinURL,
-									AttioRecordID:  single.Data.ID.RecordID,
-									AttioRecordURL: single.Data.WebURL,
-									CompanyName:    companyName,
-								}
-								if err := h.companyRepo.SaveSyncedCompany(syncLog); err != nil {
-									log.Printf("WARNING: failed saving conflicting Attio record locally: %v", err)
-								}
-								writeSyncConflict(w, "Company record already exists in Attio", single.Data.WebURL)
-								return
-							}
-						}
-					}
-				}
-			}
-		}
-
 		http.Error(w, "Attio integration engine rejected data parameters", http.StatusBadGateway)
 		return
 	}
-	// Reset the body for the decoder below
-	resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
 	// Decode Attio's mapping response target values
 	var attioResp struct {
@@ -296,15 +215,10 @@ func (h *CompanyHandler) HandleLookup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	existingSync, err := h.companyRepo.GetSyncedCompanyByDomain(userID, normalizedURL)
+	existingSync, err := h.companyRepo.GetSyncedCompanyByLinkedInURL(userID, normalizedURL)
 	if err != nil || existingSync == nil {
 		rawURL := strings.Split(linkedinURL, "?")[0]
-		existingSync, err = h.companyRepo.GetSyncedCompanyByDomain(userID, rawURL)
-	}
-	if err != nil || existingSync == nil {
-		if slug, slugErr := extractLinkedInCompanySlug(normalizedURL); slugErr == nil {
-			existingSync, err = h.companyRepo.GetSyncedCompanyByLinkedInSlug(userID, slug)
-		}
+		existingSync, err = h.companyRepo.GetSyncedCompanyByLinkedInURL(userID, rawURL)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
