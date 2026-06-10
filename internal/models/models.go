@@ -3,12 +3,14 @@ package models
 import "time"
 
 type User struct {
-	ID                string    `db:"id" json:"id"`
-	Email             string    `db:"email" json:"email"`
-	AttioAccessToken         string    `db:"attio_access_token" json:"-"`
-	AttioRefreshToken        string    `db:"attio_refresh_token" json:"-"`
-	AttioWorkspaceMemberID   string    `db:"attio_workspace_member_id" json:"attio_workspace_member_id"`
-	CreatedAt         time.Time `db:"created_at" json:"created_at"`
+	ID                     string    `db:"id" json:"id"`
+	Email                  string    `db:"email" json:"email"`
+	FirstName              string    `db:"first_name" json:"first_name"`
+	LastName               string    `db:"last_name" json:"last_name"`
+	AttioAccessToken       string    `db:"attio_access_token" json:"-"`
+	AttioWorkspaceMemberID string    `db:"attio_workspace_member_id" json:"attio_workspace_member_id"`
+	AttioWorkspaceID       string    `db:"attio_workspace_id" json:"attio_workspace_id"`
+	CreatedAt              time.Time `db:"created_at" json:"created_at"`
 }
 
 type SyncedCompany struct {

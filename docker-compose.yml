@@ -26,7 +26,7 @@ services:
       - postgres
   backend:
     build: .
-    container_name: build-extension-api
+    container_name: extension-api
     ports:
       - "8080:8080"
     environment:

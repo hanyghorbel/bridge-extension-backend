@@ -54,14 +54,32 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For now, at minimum we're using random state instead of hardcoded
-
 	attioAuthURL := fmt.Sprintf(
 		"https://app.attio.com/authorize?response_type=code&client_id=%s&redirect_uri=%s&state=%s",
 		clientID, redirectURI, state,
 	)
 
 	http.Redirect(w, r, attioAuthURL, http.StatusTemporaryRedirect)
+}
+
+type TokenResponse struct {
+	AccessToken string `json:"access_token"`
+}
+
+type IntrospectResponse struct {
+	Active bool `json:"active"`
+
+	WorkspaceID string `json:"workspace_id"`
+
+	AuthorizedByWorkspaceMemberID string `json:"authorized_by_workspace_member_id"`
+}
+
+type WorkspaceMemberResponse struct {
+	Data struct {
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+		Email     string `json:"email_address"`
+	} `json:"data"`
 }
 
 // HandleCallback receives the code from Attio, exchanges it, saves the user, and issues a JWT
@@ -73,12 +91,12 @@ func (h *AuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Missing authorization code", http.StatusBadRequest)
 		return
 	}
-
+	// IMPORTANT: validate state against CSRF attacks
 	if state == "" {
 		log.Println("WARNING: State parameter missing on callback")
 	}
 
-	// 1. Prepare payload to exchange code for token
+	// Prepare payload to exchange code for token
 	clientID := os.Getenv("ATTIO_CLIENT_ID")
 	clientSecret := os.Getenv("ATTIO_CLIENT_SECRET")
 	redirectURI := os.Getenv("ATTIO_REDIRECT_URI")
@@ -109,6 +127,7 @@ func (h *AuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		Timeout: 10 * time.Second,
 	}
 
+	// Exchange JSON Payload for token
 	resp, err := client.Post("https://app.attio.com/oauth/token", "application/json", bytes.NewBuffer(jsonPayload))
 	if err != nil {
 		log.Printf("ERROR: Failed to exchange token with Attio: %v", err)
@@ -124,96 +143,112 @@ func (h *AuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var tokenResponse struct {
-		AccessToken string `json:"access_token"`
-		// Some providers include identifying fields in the token response; parse them if present.
-		WorkspaceMemberID string `json:"workspace_member_id,omitempty"`
-		Email             string `json:"email,omitempty"`
-	}
+	// Decode response into tokenResponse
+	var tokenResponse TokenResponse
 
 	if err := json.NewDecoder(resp.Body).Decode(&tokenResponse); err != nil {
 		log.Printf("ERROR: Failed to parse token response: %v", err)
 		http.Error(w, "Failed parsing token response", http.StatusInternalServerError)
 		return
 	}
+	if tokenResponse.AccessToken == "" {
+		log.Println("ERROR: Empty access token received")
+		http.Error(w, "Invalid token response", http.StatusBadGateway)
+		return
+	}
 
-	// Try to determine the authenticated user's email and workspace member id. There is no
-	// guaranteed /v2/me endpoint, so be defensive: use fields from the token response when available,
-	// otherwise query workspace_members and try to find a match. If ambiguous, fail with a helpful error.
+	// Determine the authenticated user's email and workspace member id and workspace id
 	var userEmail string
 	var workspaceMemberID string
+	var workspaceID string
 
-	if tokenResponse.Email != "" {
-		userEmail = tokenResponse.Email
+	// Query Attio's introspect endpoint to get workspace member id
+	memberReq, err := http.NewRequest("POST", "https://app.attio.com/oauth/introspect", nil)
+	if err != nil {
+		log.Printf("ERROR: Failed to create request: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
 	}
-	if tokenResponse.WorkspaceMemberID != "" {
-		workspaceMemberID = tokenResponse.WorkspaceMemberID
+	memberReq.Header.Set("Authorization", "Bearer "+tokenResponse.AccessToken)
+
+	memberResp, err := client.Do(memberReq)
+	if err != nil {
+		log.Printf("ERROR: Failed to introspect member from Attio: %v", err)
+		http.Error(w, "Failed to introspect member information from Attio", http.StatusBadGateway)
+		return
+	}
+	defer memberResp.Body.Close()
+	if memberResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(memberResp.Body)
+		log.Printf("ERROR: Introspect failed (%d): %s", memberResp.StatusCode, body)
+		http.Error(w, "Failed to validate Attio token", http.StatusBadGateway)
+		return
 	}
 
-	// If we don't yet have an email (or workspace member id) attempt to call workspace_members
-	if userEmail == "" || workspaceMemberID == "" {
-		// 2. Query Attio's workspace_members endpoint to gather candidate members
-		reqMembers, err := http.NewRequest("GET", "https://api.attio.com/v2/workspace_members", nil)
-		if err != nil {
-			log.Printf("ERROR: Failed to create request: %v", err)
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
-			return
-		}
-		reqMembers.Header.Set("Authorization", "Bearer "+tokenResponse.AccessToken)
-
-		membersResp, err := client.Do(reqMembers)
-		if err != nil {
-			log.Printf("ERROR: Failed to fetch workspace members from Attio: %v", err)
-			http.Error(w, "Failed to fetch workspace information from Attio", http.StatusBadGateway)
-			return
-		}
-		defer membersResp.Body.Close()
-
-		if membersResp.StatusCode != http.StatusOK {
-			bodyBytes, _ := io.ReadAll(membersResp.Body)
-			log.Printf("ERROR: Attio workspace_members returned %d: %s", membersResp.StatusCode, string(bodyBytes))
-			http.Error(w, "Failed to fetch workspace information from Attio", http.StatusBadGateway)
-			return
-		}
-
-		var membersResponse struct {
-			Data []struct {
-				ID struct {
-					WorkspaceMemberID string `json:"workspace_member_id"`
-				} `json:"id"`
-				EmailAddress string `json:"email_address"`
-				AvatarURL    string `json:"avatar_url"`
-			} `json:"data"`
-		}
-
-		if err := json.NewDecoder(membersResp.Body).Decode(&membersResponse); err != nil {
-			log.Printf("ERROR: Failed parsing Attio workspace_members response: %v", err)
-			http.Error(w, "Failed parsing Attio workspace response", http.StatusInternalServerError)
-			return
-		}
-
-		// If workspaceMemberID was provided in token response, try to find the matching member and extract email
-		if workspaceMemberID != "" {
-			for _, m := range membersResponse.Data {
-				if m.ID.WorkspaceMemberID == workspaceMemberID {
-					if userEmail == "" {
-						userEmail = m.EmailAddress
-					}
-					break
-				}
-			}
-		}
-
-		// If still no email, and the workspace has only one member, use that as the authenticated identity
-		if userEmail == "" {
-			if len(membersResponse.Data) == 1 {
-				userEmail = membersResponse.Data[0].EmailAddress
-				if workspaceMemberID == "" {
-					workspaceMemberID = membersResponse.Data[0].ID.WorkspaceMemberID
-				}
-			}
-		}
+	var IntrospectResponse IntrospectResponse
+	if err := json.NewDecoder(memberResp.Body).Decode(&IntrospectResponse); err != nil {
+		log.Printf("ERROR: Failed to parse introspect response: %v", err)
+		http.Error(w, "Failed parsing introspect response", http.StatusInternalServerError)
+		return
 	}
+
+	if !IntrospectResponse.Active {
+		log.Printf("ERROR: Token invalid! login again")
+		http.Error(w, "Token is invalid, please login", http.StatusBadGateway)
+		return
+	}
+
+	workspaceMemberID = IntrospectResponse.AuthorizedByWorkspaceMemberID
+
+	if workspaceMemberID == "" {
+		log.Println("ERROR: Missing authorized workspace member ID")
+		http.Error(w, "Unable to identify Attio user", http.StatusInternalServerError)
+		return
+	}
+
+	workspaceID = IntrospectResponse.WorkspaceID
+
+	if workspaceID == "" {
+		log.Println("ERROR: Missing workspace ID")
+		http.Error(w, "Unable to identify workspace", http.StatusInternalServerError)
+		return
+	}
+
+	// Get user's data: email, name, lastname
+	memberDetailsReq, err := http.NewRequest("GET", "https://api.attio.com/v2/workspace_members/"+workspaceMemberID, nil)
+	if err != nil {
+		log.Printf("ERROR: Failed to create request: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	memberDetailsReq.Header.Set("Authorization", "Bearer "+tokenResponse.AccessToken)
+
+	memberDetailsResp, err := client.Do(memberDetailsReq)
+	if err != nil {
+		log.Printf("ERROR: Failed to fetch workspace members from Attio: %v", err)
+		http.Error(w, "Failed to fetch workspace information from Attio", http.StatusBadGateway)
+		return
+	}
+	if memberDetailsResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(memberDetailsResp.Body)
+		log.Printf("ERROR: Workspace member lookup failed (%d): %s", memberDetailsResp.StatusCode, body)
+		http.Error(w, "Failed retrieving Attio user information", http.StatusBadGateway)
+		return
+	}
+	defer memberDetailsResp.Body.Close()
+
+	// Define the typed response structure matching Attio's actual format
+	var workspaceMemberResponse WorkspaceMemberResponse
+	if err := json.NewDecoder(memberDetailsResp.Body).Decode(&workspaceMemberResponse); err != nil {
+		log.Printf("ERROR: Failed to parse introspect response: %v", err)
+		log.Printf("ERROR: Failed to parse introspect response: %v", err)
+		http.Error(w, "Failed parsing introspect response", http.StatusInternalServerError)
+		return
+	}
+	firstName := workspaceMemberResponse.Data.FirstName
+	lastName := workspaceMemberResponse.Data.LastName
+	userEmail = workspaceMemberResponse.Data.Email
+	//*************************** modifications end here ************************//
 
 	if userEmail == "" {
 		log.Println("ERROR: Unable to determine authenticated user's email from token response or workspace members")
@@ -221,8 +256,8 @@ func (h *AuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Persist the user and access token into PostgreSQL
-	user, err := h.userRepo.UpsertUser(userEmail, tokenResponse.AccessToken, workspaceMemberID)
+	// 3. Persist the user data and access token into PostgreSQL
+	user, err := h.userRepo.UpsertUser(userEmail, firstName, lastName, tokenResponse.AccessToken, workspaceMemberID, workspaceID)
 	if err != nil {
 		log.Printf("ERROR: Failed to save user session: %v", err)
 		http.Error(w, "Failed to save user session", http.StatusInternalServerError)
@@ -259,11 +294,12 @@ func (h *AuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 				const token = "%s";
 				// Post the JWT token back to the extension context that opened this tab
 				if (window.opener) {
-					// TODO: Use specific origin from environment variable instead of "*"
 					window.opener.postMessage({ type: "ATTIO_AUTH_SUCCESS", token: token }, "*");
 				}
 				// Close this temporary OAuth callback tab automatically
-				window.close();
+				setTimeout(() => {
+					window.close();
+				}, 2000);
 			</script>
 		</body>
 		</html>
@@ -272,6 +308,7 @@ func (h *AuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 // syncExistingCompaniesFromAttio fetches all existing company records from Attio and stores them locally
 // to prevent duplicate sync attempts. Uses POST query endpoint with pagination.
+// todo: verify if this is useful and if the pagination works as intended
 func (h *AuthHandler) syncExistingCompaniesFromAttio(userID, attioToken string) error {
 	client := &http.Client{Timeout: 10 * time.Second}
 
@@ -359,6 +396,7 @@ func (h *AuthHandler) syncExistingCompaniesFromAttio(userID, attioToken string) 
 			}
 
 			if linkedinURL != "" {
+				// normalizing url to only keep linkedin.com/{companyName}
 				if normalizedURL, normErr := normalizeLinkedInCompanyURL(linkedinURL); normErr == nil {
 					linkedinURL = normalizedURL
 				}

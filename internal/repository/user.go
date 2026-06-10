@@ -14,20 +14,21 @@ func NewUserRepository(db *sqlx.DB) *UserRepository {
 }
 
 // UpsertUser inserts a new user or updates their Attio token if they already exist
-func (r *UserRepository) UpsertUser(email, token, workspaceMemberID string) (*models.User, error) {
+func (r *UserRepository) UpsertUser(email, firstname, lastname, token, workspaceMemberID, workspaceID string) (*models.User, error) {
 	// Insert or update user record. If workspace member id is provided, persist it as well.
 	query := `
-		INSERT INTO users (email, attio_access_token, attio_workspace_member_id, updated_at)
-		VALUES ($1, $2, $3, NOW())
+		INSERT INTO users (email,first_name,last_name, attio_access_token, attio_workspace_member_id, attio_workspace_id, updated_at)
+		VALUES ($1, $2, $3,$4,$5,$6, NOW())
 		ON CONFLICT (email)
 		DO UPDATE SET
 			attio_access_token = EXCLUDED.attio_access_token,
 			attio_workspace_member_id = COALESCE(EXCLUDED.attio_workspace_member_id, users.attio_workspace_member_id),
+		    attio_workspace_id = COALESCE(EXCLUDED.attio_workspace_id, users.attio_workspace_id),
 			updated_at = NOW()
-		RETURNING id, email, attio_workspace_member_id, created_at;
+		RETURNING id, email,first_name,last_name, attio_workspace_member_id,attio_workspace_id, created_at;
 	`
 	var user models.User
-	err := r.db.Get(&user, query, email, token, workspaceMemberID)
+	err := r.db.Get(&user, query, email, firstname, lastname, token, workspaceMemberID, workspaceID)
 	if err != nil {
 		return nil, err
 	}
