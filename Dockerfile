@@ -1,13 +1,12 @@
-# Step 1: Build the Go binary using Go 1.26
+# Build the Go binary using Go 1.26
 FROM golang:1.26-alpine AS builder
 WORKDIR /app
 COPY go.mod ./
-# IMPORTANT: add go.sum above if you'll add a checksum
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o main ./cmd/api
 
-# Step 2: Run the binary
+# Run the binary
 FROM alpine:latest
 WORKDIR /root/
 COPY --from=builder /app/main .

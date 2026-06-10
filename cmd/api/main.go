@@ -37,7 +37,7 @@ func main() {
 	defer db.Close()
 
 	log.Println("Successfully connected to PostgreSQL database.")
-
+	// Initialize User Module layers
 	userRepo := repository.NewUserRepository(db)
 	authHandler := handlers.NewAuthHandler(userRepo)
 
@@ -51,12 +51,6 @@ func main() {
 	// Attach API action endpoints
 	http.HandleFunc("/api/sync", companyHandler.HandleSync)
 	http.HandleFunc("/api/companies/lookup", companyHandler.HandleLookup)
-
-	// Health check endpoint
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-	})
 
 	port := ":8080"
 	log.Printf("Server running on %s", port)

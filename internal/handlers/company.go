@@ -52,7 +52,7 @@ func (h *CompanyHandler) HandleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Authorize user request using the JWT Utility
+	// Authorize user request using the JWT Utility
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
 		http.Error(w, "Unauthorized payload signature", http.StatusUnauthorized)
@@ -66,7 +66,7 @@ func (h *CompanyHandler) HandleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Parse inbound JSON extraction from extension
+	// Parse inbound JSON extraction from extension
 	var reqBody SyncRequest
 	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
 		http.Error(w, "Bad request payload", http.StatusBadRequest)
@@ -85,7 +85,7 @@ func (h *CompanyHandler) HandleSync(w http.ResponseWriter, r *http.Request) {
 	}
 	reqBody.LinkedinURL = normalizedURL
 
-	// 3. Check if this company has already been synced by this user
+	// Check if this company has already been synced by this user
 	existingSync, err := h.companyRepo.GetSyncedCompanyByDomain(userID, reqBody.LinkedinURL)
 	if err != nil || existingSync == nil {
 		if slug, slugErr := extractLinkedInCompanySlug(reqBody.LinkedinURL); slugErr == nil {
@@ -97,14 +97,14 @@ func (h *CompanyHandler) HandleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Resolve the user's personal Attio token from the DB
+	// Resolve the user's personal Attio token from the DB
 	attioToken, err := h.companyRepo.GetUserAttioToken(userID)
 	if err != nil {
 		http.Error(w, "Failed retrieving integration credentials", http.StatusInternalServerError)
 		return
 	}
 
-	// 5. Construct Attio v2 JSON object write requirements
+	// Construct Attio v2 JSON object write requirements
 	// Ref: Attio Docs expects structured fields inside {"data": {"values": { ... }}}
 	attioPayload := map[string]interface{}{
 		"data": map[string]interface{}{
@@ -147,6 +147,7 @@ func (h *CompanyHandler) HandleSync(w http.ResponseWriter, r *http.Request) {
 
 		// Attempt to detect uniqueness conflict and handle gracefully by mapping the
 		// conflicting remote record into our local DB and returning a 409 to the client.
+		// todo: check if this is necessary
 		var errBody map[string]interface{}
 		if err := json.Unmarshal(bodyBytes, &errBody); err == nil {
 			if code, _ := errBody["code"].(string); code == "uniqueness_conflict" {
@@ -223,7 +224,7 @@ func (h *CompanyHandler) HandleSync(w http.ResponseWriter, r *http.Request) {
 	// Reset the body for the decoder below
 	resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
-	// 6. Decode Attio's mapping response target values
+	// Decode Attio's mapping response target values
 	var attioResp struct {
 		Data struct {
 			ID struct {
@@ -237,7 +238,7 @@ func (h *CompanyHandler) HandleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 7. Record successfully synchronized logs inside local Postgres layer
+	// Record successfully synchronized logs inside local Postgres layer
 	syncLog := &models.SyncedCompany{
 		UserID:         userID,
 		LinkedinURL:    reqBody.LinkedinURL,
@@ -249,7 +250,7 @@ func (h *CompanyHandler) HandleSync(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Non-blocking telemetry logging error: %v", err)
 	}
 
-	// 8. Hand response link payloads cleanly back to the client interface execution loop
+	// Hand response link payloads cleanly back to the client interface execution loop
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"status":     "success",
